@@ -1,59 +1,28 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
-from typing import List
-import json
+from fastapi import FastAPI, Request
+from pydantic import BaseModel, Field
+from typing import Union
+import logging
 
-app = FastAPI(title="Pixel Park Telemetry Engine")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("telemetry")
 
-# Define what a standard ride telemetry packet looks like
+app = FastAPI(title="Pixel Park Telemetry Service")
+
 class TelemetryData(BaseModel):
-    cart_id: str
+    cart_id: str = Field(..., example="minecart_1")
     x: float
     y: float
     z: float
-    timestamp: float
+    timestamp: Union[int, float]  # Accepts integer seconds or float Unix timestamps
 
-# Manage active browser/dashboard connections
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.sent_text(message)
-
-manager = ConnectionManager()
-
-@app.get("/")
-def read_root():
-    return {"status": "Pixel Park Backend Online"}
-
-# Endpoint: receives data from Minecraft
 @app.post("/api/telemetry")
 async def receive_telemetry(data: TelemetryData):
-    # Turn incoming data into JSON string
-    payload = json.dumps(data.model_dump())
+    logger.info(f"Received telemetry: {data.dict()}")
+    return {"status": "success", "received": data}
 
-    # Broadcast instantly to any open web dashboards
-    await manager.broadcast(payload)
-
-    # Return success to Minecraft plugin
-    return {"status": "Telemetry Received", "broadcasted": True}
-
-# Endpoint: broadcasts live data to the frontend dashboard
-@app.websocket("/ws/dashboard")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            # Keep connection alive listening for client messages
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+# Debug middleware to log raw body if parsing fails
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    body = await request.body()
+    logger.error(f"Error handling request! Raw body: {body.decode('utf-8', errors='ignore')}")
+    return {"detail": str(exc), "raw_body": body.decode('utf-8', errors='ignore')}
